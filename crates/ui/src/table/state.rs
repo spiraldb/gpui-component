@@ -3,8 +3,8 @@ use std::{ops::Range, rc::Rc, time::Duration};
 use crate::{
     ActiveTheme, ElementExt, Icon, IconName, StyleSized as _, StyledExt, VirtualListScrollHandle,
     actions::{
-        Cancel, SelectDown, SelectFirst, SelectLast, SelectNextColumn, SelectPageDown,
-        SelectPageUp, SelectPrevColumn, SelectUp,
+        Cancel, CopySelection, SelectDown, SelectFirst, SelectLast, SelectNextColumn,
+        SelectPageDown, SelectPageUp, SelectPrevColumn, SelectUp,
     },
     h_flex,
     menu::{ContextMenuExt, PopupMenu},
@@ -12,9 +12,10 @@ use crate::{
     v_flex,
 };
 use gpui::{
-    AppContext, Axis, Bounds, ClickEvent, Context, Div, DragMoveEvent, EventEmitter, FocusHandle,
-    Focusable, InteractiveElement, IntoElement, ListSizingBehavior, MouseButton, MouseDownEvent,
-    ParentElement, Pixels, Point, Render, ScrollStrategy, SharedString, Stateful,
+    AppContext, Axis, Bounds, ClickEvent, ClipboardItem, Context, Div, DragMoveEvent, Edges,
+    EventEmitter, FocusHandle, Focusable, InteractiveElement, IntoElement, ListSizingBehavior,
+    MouseButton,
+    MouseDownEvent, ParentElement, Pixels, Point, Render, ScrollStrategy, SharedString, Stateful,
     StatefulInteractiveElement as _, Styled, Task, UniformListScrollHandle, Window, div,
     prelude::FluentBuilder, px, uniform_list,
 };
@@ -43,6 +44,97 @@ impl SelectionMode {
     fn is_cell(&self) -> bool {
         matches!(self, SelectionMode::Cell)
     }
+}
+
+/// One selected region. The table's overall selection is the union of any
+/// number of these, letting users build Google-Sheets-style selections:
+/// a plain click selects one cell, shift extends a rectangle from the anchor,
+/// and holding the platform key (cmd/ctrl) adds further disjoint regions.
+///
+/// Row and column regions are stored without bounds on the other axis so they
+/// stay correct if the row/column count changes; they are resolved against the
+/// live counts only when copying.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum SelectionRegion {
+    /// An inclusive rectangle of cells with normalized corners (`r0 <= r1`, `c0 <= c1`).
+    Cells {
+        r0: usize,
+        c0: usize,
+        r1: usize,
+        c1: usize,
+    },
+    /// Whole rows `r0..=r1` across every column.
+    Rows { r0: usize, r1: usize },
+    /// Whole columns `c0..=c1` across every row.
+    Cols { c0: usize, c1: usize },
+}
+
+impl SelectionRegion {
+    fn cell(row: usize, col: usize) -> Self {
+        Self::Cells {
+            r0: row,
+            c0: col,
+            r1: row,
+            c1: col,
+        }
+    }
+
+    fn cells(a: (usize, usize), b: (usize, usize)) -> Self {
+        Self::Cells {
+            r0: a.0.min(b.0),
+            c0: a.1.min(b.1),
+            r1: a.0.max(b.0),
+            c1: a.1.max(b.1),
+        }
+    }
+
+    fn rows(a: usize, b: usize) -> Self {
+        Self::Rows {
+            r0: a.min(b),
+            r1: a.max(b),
+        }
+    }
+
+    fn cols(a: usize, b: usize) -> Self {
+        Self::Cols {
+            c0: a.min(b),
+            c1: a.max(b),
+        }
+    }
+
+    fn contains(&self, row: usize, col: usize) -> bool {
+        match *self {
+            Self::Cells { r0, c0, r1, c1 } => {
+                (r0..=r1).contains(&row) && (c0..=c1).contains(&col)
+            }
+            Self::Rows { r0, r1 } => (r0..=r1).contains(&row),
+            Self::Cols { c0, c1 } => (c0..=c1).contains(&col),
+        }
+    }
+
+    fn contains_full_row(&self, row: usize) -> bool {
+        matches!(*self, Self::Rows { r0, r1 } if (r0..=r1).contains(&row))
+    }
+
+    /// Resolve to an inclusive `(r0, c0, r1, c1)` box against the live counts.
+    fn bounds(&self, rows_count: usize, cols_count: usize) -> (usize, usize, usize, usize) {
+        let last_row = rows_count.saturating_sub(1);
+        let last_col = cols_count.saturating_sub(1);
+        match *self {
+            Self::Cells { r0, c0, r1, c1 } => (r0, c0, r1, c1),
+            Self::Rows { r0, r1 } => (r0, 0, r1, last_col),
+            Self::Cols { c0, c1 } => (0, c0, last_row, c1),
+        }
+    }
+}
+
+/// The point a shift-extension grows from, tracked per axis so a shift-click
+/// only extends when it matches the kind of the last click.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum Anchor {
+    Cell(usize, usize),
+    Row(usize),
+    Col(usize),
 }
 
 /// The Table event.
@@ -233,6 +325,13 @@ pub struct TableState<D: TableDelegate> {
     selected_col: Option<usize>,
     selected_cell: Option<(usize, usize)>,
 
+    /// Every selected region. The single-selection fields above track the
+    /// *active* anchor (for keyboard navigation and the public getters); this
+    /// is the full set that drives highlighting and copy.
+    selections: Vec<SelectionRegion>,
+    /// Where a shift-extension grows from; reset on every plain click.
+    anchor: Option<Anchor>,
+
     /// The column index that is being resized.
     resizing_col: Option<usize>,
 
@@ -263,6 +362,8 @@ where
             right_clicked_cell: None,
             selected_col: None,
             selected_cell: None,
+            selections: Vec::new(),
+            anchor: None,
             resizing_col: None,
             bounds: Bounds::default(),
             fixed_head_cols_bounds: Bounds::default(),
@@ -404,6 +505,10 @@ where
         self.selection_mode = SelectionMode::Row;
         self.right_clicked_row = None;
         self.selected_row = Some(row_ix);
+        self.selected_col = None;
+        self.selected_cell = None;
+        self.selections = vec![SelectionRegion::rows(row_ix, row_ix)];
+        self.anchor = Some(Anchor::Row(row_ix));
         if let Some(row_ix) = self.selected_row {
             self.vertical_scroll_handle.scroll_to_item(
                 row_ix,
@@ -442,6 +547,10 @@ where
     pub fn set_selected_col(&mut self, col_ix: usize, cx: &mut Context<Self>) {
         self.selection_mode = SelectionMode::Column;
         self.selected_col = Some(col_ix);
+        self.selected_row = None;
+        self.selected_cell = None;
+        self.selections = vec![SelectionRegion::cols(col_ix, col_ix)];
+        self.anchor = Some(Anchor::Col(col_ix));
         if let Some(col_ix) = self.selected_col {
             self.scroll_to_col(col_ix, cx);
         }
@@ -482,6 +591,10 @@ where
     pub fn set_selected_cell(&mut self, row_ix: usize, col_ix: usize, cx: &mut Context<Self>) {
         self.selection_mode = SelectionMode::Cell;
         self.selected_cell = Some((row_ix, col_ix));
+        self.selected_row = None;
+        self.selected_col = None;
+        self.selections = vec![SelectionRegion::cell(row_ix, col_ix)];
+        self.anchor = Some(Anchor::Cell(row_ix, col_ix));
 
         // Scroll to the cell
         self.vertical_scroll_handle
@@ -498,6 +611,8 @@ where
         self.selected_row = None;
         self.selected_col = None;
         self.selected_cell = None;
+        self.selections.clear();
+        self.anchor = None;
         cx.emit(TableEvent::ClearSelection);
         cx.notify();
     }
@@ -667,14 +782,27 @@ where
             return;
         }
 
-        self.set_selected_row(row_ix, cx);
+        let modifiers = e.modifiers();
+        if modifiers.secondary() {
+            self.toggle_row_region(row_ix, cx);
+        } else if modifiers.shift {
+            self.extend_row_region(row_ix, cx);
+        } else {
+            self.set_selected_row(row_ix, cx);
+        }
 
         if e.click_count() == 2 {
             cx.emit(TableEvent::DoubleClickedRow(row_ix));
         }
     }
 
-    fn on_col_head_click(&mut self, col_ix: usize, _: &mut Window, cx: &mut Context<Self>) {
+    fn on_col_head_click(
+        &mut self,
+        e: &ClickEvent,
+        col_ix: usize,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if !self.col_selectable {
             return;
         }
@@ -687,7 +815,14 @@ where
             return;
         }
 
-        self.set_selected_col(col_ix, cx)
+        let modifiers = e.modifiers();
+        if modifiers.secondary() {
+            self.toggle_col_region(col_ix, cx);
+        } else if modifiers.shift {
+            self.extend_col_region(col_ix, cx);
+        } else {
+            self.set_selected_col(col_ix, cx);
+        }
     }
 
     fn on_cell_click(
@@ -705,14 +840,27 @@ where
         cx.stop_propagation();
 
         let is_double_click = e.click_count() == 2;
+        let modifiers = e.modifiers();
+
+        // cmd/ctrl adds a disjoint cell; shift grows a rectangle from the
+        // anchor. Neither escalates to a row or fires double-click actions.
+        if modifiers.secondary() {
+            self.toggle_cell_region(row_ix, col_ix, cx);
+            return;
+        }
+        if modifiers.shift {
+            self.extend_cell_region(row_ix, col_ix, cx);
+            return;
+        }
 
         // When the row header column is hidden, a single click on the
         // already-selected cell escalates the selection to the entire row —
         // giving users a way to pick rows without the dedicated header column.
         // Double-clicks are passed through to `DoubleClickedCell` and never
         // trigger the escalation.
-        let is_reselect =
-            self.selection_mode.is_cell() && self.selected_cell == Some((row_ix, col_ix));
+        let is_reselect = self.selection_mode.is_cell()
+            && self.selected_cell == Some((row_ix, col_ix))
+            && self.selections.len() == 1;
         let should_escalate_to_row =
             !self.row_header && self.row_selectable && is_reselect && !is_double_click;
         if should_escalate_to_row {
@@ -728,7 +876,295 @@ where
     }
 
     fn has_selection(&self) -> bool {
-        self.selected_row.is_some() || self.selected_col.is_some() || self.selected_cell.is_some()
+        !self.selections.is_empty()
+    }
+
+    /// Whether the cell at `(row_ix, col_ix)` falls in any selected region.
+    fn is_cell_selected(&self, row_ix: usize, col_ix: usize) -> bool {
+        self.selections
+            .iter()
+            .any(|region| region.contains(row_ix, col_ix))
+    }
+
+    /// Whether an entire row is selected (part of a full-row region).
+    fn is_row_fully_selected(&self, row_ix: usize) -> bool {
+        self.selections
+            .iter()
+            .any(|region| region.contains_full_row(row_ix))
+    }
+
+    /// Which edges of a selected cell lie on the selection boundary — i.e. the
+    /// neighbour on that side is unselected or off-grid. Drawing a border only
+    /// on boundary edges outlines each contiguous block (and any punched-out
+    /// hole) once, instead of bordering every cell individually.
+    fn cell_selection_edges(
+        &self,
+        row_ix: usize,
+        col_ix: usize,
+        rows_count: usize,
+        cols_count: usize,
+    ) -> Edges<bool> {
+        let selected =
+            |row: usize, col: usize| row < rows_count && col < cols_count && self.is_cell_selected(row, col);
+
+        Edges {
+            top: row_ix == 0 || !selected(row_ix - 1, col_ix),
+            bottom: row_ix + 1 >= rows_count || !selected(row_ix + 1, col_ix),
+            left: col_ix == 0 || !selected(row_ix, col_ix - 1),
+            right: col_ix + 1 >= cols_count || !selected(row_ix, col_ix + 1),
+        }
+    }
+
+    fn column_selectable(&self, col_ix: usize) -> bool {
+        self.col_groups
+            .get(col_ix)
+            .map(|col_group| col_group.column.selectable)
+            .unwrap_or(false)
+    }
+
+    /// Add the cell, or punch it out if already selected (platform/cmd-click).
+    ///
+    /// Deselecting subtracts the cell from any rectangular region that covers
+    /// it, splitting that rectangle into the surrounding pieces — the
+    /// spreadsheet "hole in a selection" behaviour. Full row/column regions are
+    /// left intact.
+    fn toggle_cell_region(&mut self, row_ix: usize, col_ix: usize, cx: &mut Context<Self>) {
+        self.selection_mode = SelectionMode::Cell;
+        self.selected_row = None;
+        self.selected_col = None;
+        self.selected_cell = Some((row_ix, col_ix));
+        self.anchor = Some(Anchor::Cell(row_ix, col_ix));
+
+        if self.is_cell_selected(row_ix, col_ix) {
+            self.subtract_cell(row_ix, col_ix);
+        } else {
+            self.selections.push(SelectionRegion::cell(row_ix, col_ix));
+        }
+        cx.emit(TableEvent::SelectCell(row_ix, col_ix));
+        cx.notify();
+    }
+
+    /// Remove a single cell from every rectangular region that contains it,
+    /// replacing each such rectangle with the (up to four) pieces around the
+    /// hole. Non-rectangular (full row/column) regions are kept as-is.
+    fn subtract_cell(&mut self, row_ix: usize, col_ix: usize) {
+        let mut next = Vec::with_capacity(self.selections.len());
+        for region in self.selections.drain(..) {
+            match region {
+                SelectionRegion::Cells { r0, c0, r1, c1 }
+                    if (r0..=r1).contains(&row_ix) && (c0..=c1).contains(&col_ix) =>
+                {
+                    if r0 < row_ix {
+                        next.push(SelectionRegion::Cells {
+                            r0,
+                            c0,
+                            r1: row_ix - 1,
+                            c1,
+                        });
+                    }
+                    if row_ix < r1 {
+                        next.push(SelectionRegion::Cells {
+                            r0: row_ix + 1,
+                            c0,
+                            r1,
+                            c1,
+                        });
+                    }
+                    if c0 < col_ix {
+                        next.push(SelectionRegion::Cells {
+                            r0: row_ix,
+                            c0,
+                            r1: row_ix,
+                            c1: col_ix - 1,
+                        });
+                    }
+                    if col_ix < c1 {
+                        next.push(SelectionRegion::Cells {
+                            r0: row_ix,
+                            c0: col_ix + 1,
+                            r1: row_ix,
+                            c1,
+                        });
+                    }
+                }
+                other => next.push(other),
+            }
+        }
+        self.selections = next;
+    }
+
+    /// Grow the active cell region into a rectangle to `(row_ix, col_ix)`
+    /// (shift-click). Falls back to a single cell when there is no cell anchor.
+    fn extend_cell_region(&mut self, row_ix: usize, col_ix: usize, cx: &mut Context<Self>) {
+        self.selection_mode = SelectionMode::Cell;
+        self.selected_row = None;
+        self.selected_col = None;
+        self.selected_cell = Some((row_ix, col_ix));
+
+        match self.anchor {
+            Some(Anchor::Cell(ar, ac)) => {
+                let region = SelectionRegion::cells((ar, ac), (row_ix, col_ix));
+                match self.selections.last_mut() {
+                    Some(last) => *last = region,
+                    None => self.selections.push(region),
+                }
+            }
+            _ => {
+                self.selections = vec![SelectionRegion::cell(row_ix, col_ix)];
+                self.anchor = Some(Anchor::Cell(row_ix, col_ix));
+            }
+        }
+        cx.emit(TableEvent::SelectCell(row_ix, col_ix));
+        cx.notify();
+    }
+
+    /// Add or remove a single full-row region (cmd-click on a row header).
+    fn toggle_row_region(&mut self, row_ix: usize, cx: &mut Context<Self>) {
+        self.selection_mode = SelectionMode::Row;
+        self.right_clicked_row = None;
+        self.selected_col = None;
+        self.selected_cell = None;
+        self.selected_row = Some(row_ix);
+        self.anchor = Some(Anchor::Row(row_ix));
+
+        let region = SelectionRegion::rows(row_ix, row_ix);
+        match self.selections.iter().position(|r| *r == region) {
+            Some(pos) => {
+                self.selections.remove(pos);
+            }
+            None => self.selections.push(region),
+        }
+        cx.emit(TableEvent::SelectRow(row_ix));
+        cx.notify();
+    }
+
+    /// Grow the active row region to span `anchor..=row_ix` (shift-click).
+    fn extend_row_region(&mut self, row_ix: usize, cx: &mut Context<Self>) {
+        self.selection_mode = SelectionMode::Row;
+        self.right_clicked_row = None;
+        self.selected_col = None;
+        self.selected_cell = None;
+        self.selected_row = Some(row_ix);
+
+        match self.anchor {
+            Some(Anchor::Row(ar)) => {
+                let region = SelectionRegion::rows(ar, row_ix);
+                match self.selections.last_mut() {
+                    Some(last) => *last = region,
+                    None => self.selections.push(region),
+                }
+            }
+            _ => {
+                self.selections = vec![SelectionRegion::rows(row_ix, row_ix)];
+                self.anchor = Some(Anchor::Row(row_ix));
+            }
+        }
+        cx.emit(TableEvent::SelectRow(row_ix));
+        cx.notify();
+    }
+
+    /// Add or remove a single full-column region (cmd-click on a column header).
+    fn toggle_col_region(&mut self, col_ix: usize, cx: &mut Context<Self>) {
+        self.selection_mode = SelectionMode::Column;
+        self.selected_row = None;
+        self.selected_cell = None;
+        self.selected_col = Some(col_ix);
+        self.anchor = Some(Anchor::Col(col_ix));
+
+        let region = SelectionRegion::cols(col_ix, col_ix);
+        match self.selections.iter().position(|r| *r == region) {
+            Some(pos) => {
+                self.selections.remove(pos);
+            }
+            None => self.selections.push(region),
+        }
+        cx.emit(TableEvent::SelectColumn(col_ix));
+        cx.notify();
+    }
+
+    /// Grow the active column region to span `anchor..=col_ix` (shift-click).
+    fn extend_col_region(&mut self, col_ix: usize, cx: &mut Context<Self>) {
+        self.selection_mode = SelectionMode::Column;
+        self.selected_row = None;
+        self.selected_cell = None;
+        self.selected_col = Some(col_ix);
+
+        match self.anchor {
+            Some(Anchor::Col(ac)) => {
+                let region = SelectionRegion::cols(ac, col_ix);
+                match self.selections.last_mut() {
+                    Some(last) => *last = region,
+                    None => self.selections.push(region),
+                }
+            }
+            _ => {
+                self.selections = vec![SelectionRegion::cols(col_ix, col_ix)];
+                self.anchor = Some(Anchor::Col(col_ix));
+            }
+        }
+        cx.emit(TableEvent::SelectColumn(col_ix));
+        cx.notify();
+    }
+
+    /// Copy the current selection to the clipboard as tab-separated values.
+    ///
+    /// The text spans the bounding box of every selected region: rows separated
+    /// by newlines, columns by tabs, so it pastes into a spreadsheet as a grid.
+    /// Cells inside the box that are not selected are left blank (matching
+    /// spreadsheet copy), and non-selectable columns (e.g. a leading action
+    /// affordance) are omitted.
+    pub(super) fn action_copy(
+        &mut self,
+        _: &CopySelection,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.selections.is_empty() {
+            cx.propagate();
+            return;
+        }
+
+        let rows_count = self.delegate.rows_count(cx);
+        let cols_count = self.delegate.columns_count(cx);
+        if rows_count == 0 || cols_count == 0 {
+            return;
+        }
+
+        let (mut r0, mut c0, mut r1, mut c1) = (usize::MAX, usize::MAX, 0usize, 0usize);
+        for region in &self.selections {
+            let (rr0, cc0, rr1, cc1) = region.bounds(rows_count, cols_count);
+            r0 = r0.min(rr0);
+            c0 = c0.min(cc0);
+            r1 = r1.max(rr1);
+            c1 = c1.max(cc1);
+        }
+        if r0 > r1 || c0 > c1 {
+            return;
+        }
+
+        let cols: Vec<usize> = (c0..=c1)
+            .filter(|&col| self.column_selectable(col))
+            .collect();
+        if cols.is_empty() {
+            return;
+        }
+
+        let mut text = String::new();
+        for row in r0..=r1 {
+            if row != r0 {
+                text.push('\n');
+            }
+            for (i, &col) in cols.iter().enumerate() {
+                if i != 0 {
+                    text.push('\t');
+                }
+                if self.is_cell_selected(row, col) {
+                    text.push_str(&self.delegate.cell_text(row, col, cx));
+                }
+            }
+        }
+
+        cx.write_to_clipboard(ClipboardItem::new_string(text));
     }
 
     pub(super) fn action_cancel(&mut self, _: &Cancel, _: &mut Window, cx: &mut Context<Self>) {
@@ -1334,8 +1770,8 @@ where
             .table_cell_size(self.options.size)
             .when(!is_head, |this| {
                 this.when(self.row_selectable, |this| {
-                    this.on_click(cx.listener(move |table, _, _window, cx| {
-                        table.set_selected_row(row_ix, cx);
+                    this.on_click(cx.listener(move |table, e, window, cx| {
+                        table.on_row_left_click(e, row_ix, window, cx);
                     }))
                 })
             })
@@ -1401,8 +1837,8 @@ where
             .child(
                 self.render_cell(None, col_ix, window, cx)
                     .id(("col-header", col_ix))
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.on_col_head_click(col_ix, window, cx);
+                    .on_click(cx.listener(move |this, e, window, cx| {
+                        this.on_col_head_click(e, col_ix, window, cx);
                     }))
                     .child(
                         h_flex()
@@ -1721,7 +2157,7 @@ where
     ) -> Stateful<Div> {
         let horizontal_scroll_handle = self.horizontal_scroll_handle.clone();
         let is_stripe_row = self.options.stripe && row_ix % 2 != 0;
-        let is_selected = self.selected_row == Some(row_ix);
+        let is_selected = self.is_row_fully_selected(row_ix);
         let view = cx.entity().clone();
         let row_height = self.options.size.table_row_height();
 
@@ -1760,9 +2196,13 @@ where
                                 let mut items = Vec::with_capacity(left_columns_count);
 
                                 (0..left_columns_count).for_each(|col_ix| {
-                                    let is_cell_selected = self.selected_cell
-                                        == Some((row_ix, col_ix))
-                                        && self.selection_mode.is_cell();
+                                    let is_cell_selected = self.is_cell_selected(row_ix, col_ix);
+                                    let selection_edges = self.cell_selection_edges(
+                                        row_ix,
+                                        col_ix,
+                                        rows_count,
+                                        columns_count,
+                                    );
                                     let is_cell_right_clicked =
                                         self.right_clicked_cell == Some((row_ix, col_ix));
 
@@ -1781,7 +2221,18 @@ where
                                                                 .absolute()
                                                                 .inset_0()
                                                                 .bg(cx.theme().tokens.table_active)
-                                                                .border_1()
+                                                                .when(selection_edges.top, |d| {
+                                                                    d.border_t_1()
+                                                                })
+                                                                .when(selection_edges.bottom, |d| {
+                                                                    d.border_b_1()
+                                                                })
+                                                                .when(selection_edges.left, |d| {
+                                                                    d.border_l_1()
+                                                                })
+                                                                .when(selection_edges.right, |d| {
+                                                                    d.border_r_1()
+                                                                })
                                                                 .border_color(
                                                                     cx.theme().table_active_border,
                                                                 ),
@@ -1870,9 +2321,14 @@ where
 
                                         visible_range.for_each(|col_ix| {
                                             let col_ix = col_ix + left_columns_count;
-                                            let is_cell_selected = table.selected_cell
-                                                == Some((row_ix, col_ix))
-                                                && table.selection_mode.is_cell();
+                                            let is_cell_selected =
+                                                table.is_cell_selected(row_ix, col_ix);
+                                            let selection_edges = table.cell_selection_edges(
+                                                row_ix,
+                                                col_ix,
+                                                rows_count,
+                                                columns_count,
+                                            );
                                             let is_cell_right_clicked =
                                                 table.right_clicked_cell == Some((row_ix, col_ix));
 
@@ -1903,7 +2359,22 @@ where
                                                                         .theme()
                                                                         .tokens
                                                                         .table_active)
-                                                                    .border_1()
+                                                                    .when(
+                                                                        selection_edges.top,
+                                                                        |d| d.border_t_1(),
+                                                                    )
+                                                                    .when(
+                                                                        selection_edges.bottom,
+                                                                        |d| d.border_b_1(),
+                                                                    )
+                                                                    .when(
+                                                                        selection_edges.left,
+                                                                        |d| d.border_l_1(),
+                                                                    )
+                                                                    .when(
+                                                                        selection_edges.right,
+                                                                        |d| d.border_r_1(),
+                                                                    )
                                                                     .border_color(
                                                                         cx.theme()
                                                                             .table_active_border,
