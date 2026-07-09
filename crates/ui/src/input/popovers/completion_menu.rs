@@ -4,11 +4,11 @@ use gpui::{
     Action, AnyElement, App, AppContext, Context, DismissEvent, Empty, Entity, EventEmitter,
     Half as _, HighlightStyle, InteractiveElement as _, IntoElement, ParentElement, Pixels, Point,
     Render, RenderOnce, SharedString, Styled, StyledText, Subscription, Window, deferred, div,
-    prelude::FluentBuilder, px, relative,
+    prelude::FluentBuilder, px, relative, svg,
 };
 use lsp_types::{CompletionItem, CompletionTextEdit};
 
-const MAX_MENU_WIDTH: Pixels = px(320.);
+const MAX_MENU_WIDTH: Pixels = px(480.);
 const MAX_MENU_HEIGHT: Pixels = px(240.);
 const POPOVER_GAP: Pixels = px(4.);
 
@@ -86,20 +86,70 @@ impl RenderOnce for CompletionMenuItem {
         let item = self.item;
 
         let deprecated = item.deprecated.unwrap_or(false);
-        let matched_len = item
-            .filter_text
-            .as_ref()
-            .map(|s| s.len())
-            .unwrap_or(self.highlight_prefix.len())
-            .min(item.label.len());
+        let blue = cx.theme().blue;
+        let matched = || HighlightStyle {
+            color: Some(blue),
+            ..Default::default()
+        };
 
-        let highlights = vec![(
-            0..matched_len,
-            HighlightStyle {
-                color: Some(cx.theme().blue),
-                ..Default::default()
-            },
-        )];
+        // Prefer explicit matched byte ranges from `data.match` (e.g. fuzzy
+        // matches, which aren't a leading prefix); otherwise bold the leading
+        // matched prefix as before.
+        let explicit_ranges = item
+            .data
+            .as_ref()
+            .and_then(|data| data.get("match"))
+            .and_then(|m| m.as_array())
+            .map(|pairs| {
+                pairs
+                    .iter()
+                    .filter_map(|pair| {
+                        let pair = pair.as_array()?;
+                        let start = pair.first()?.as_u64()? as usize;
+                        let end = pair.get(1)?.as_u64()? as usize;
+                        (start < end && end <= item.label.len()).then_some((start..end, matched()))
+                    })
+                    .collect::<Vec<_>>()
+            });
+        let highlights = explicit_ranges.unwrap_or_else(|| {
+            let matched_len = item
+                .filter_text
+                .as_ref()
+                .map(|s| s.len())
+                .unwrap_or(self.highlight_prefix.len())
+                .min(item.label.len());
+            vec![(0..matched_len, matched())]
+        });
+
+        // Items may carry an icon path in `data.icon` (resolved through the
+        // app's asset source); such items render as a bordered tag with the
+        // icon leading. Items without one render as plain text.
+        let icon = item
+            .data
+            .as_ref()
+            .and_then(|data| data.get("icon"))
+            .and_then(|icon| icon.as_str())
+            .map(|icon| icon.to_string());
+        let label = StyledText::new(item.label.clone()).with_highlights(highlights);
+        let label: AnyElement = match icon {
+            Some(icon) => h_flex()
+                .gap_1()
+                .px(px(6.))
+                .py(px(1.))
+                .rounded(cx.theme().radius)
+                .border_1()
+                .border_color(cx.theme().border)
+                .child(
+                    svg()
+                        .path(icon)
+                        .size(px(12.))
+                        .flex_none()
+                        .text_color(cx.theme().muted_foreground),
+                )
+                .child(label)
+                .into_any_element(),
+            None => label.into_any_element(),
+        };
 
         h_flex()
             .id(self.ix)
@@ -114,7 +164,7 @@ impl RenderOnce for CompletionMenuItem {
                 this.bg(cx.theme().tokens.accent)
                     .text_color(cx.theme().accent_foreground)
             })
-            .child(div().child(StyledText::new(item.label.clone()).with_highlights(highlights)))
+            .child(label)
             .when(item.detail.is_some(), |this| {
                 this.child(
                     Label::new(item.detail.as_deref().unwrap_or("").to_string())
