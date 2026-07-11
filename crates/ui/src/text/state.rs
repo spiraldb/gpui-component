@@ -28,11 +28,11 @@ const MAX_COALESCED_UPDATES_PER_PARSE: usize = 64;
 
 pub(crate) fn init(cx: &mut App) {
     cx.bind_keys(vec![
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_family = "wasm"))]
         KeyBinding::new("cmd-c", input::Copy, Some(CONTEXT)),
         #[cfg(not(target_os = "macos"))]
         KeyBinding::new("ctrl-c", input::Copy, Some(CONTEXT)),
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_family = "wasm"))]
         KeyBinding::new("cmd-a", input::SelectAll, Some(CONTEXT)),
         #[cfg(not(target_os = "macos"))]
         KeyBinding::new("ctrl-a", input::SelectAll, Some(CONTEXT)),

@@ -299,13 +299,13 @@ impl Element for TextView {
             })
             .relative()
             .on_action(move |_: &crate::input::Copy, window, cx| {
-                use crate::WindowExt as _;
+                use crate::{WindowExt as _, clipboard_utils::write_clipboard_text};
                 let text = window.selected_text(cx).trim().to_string();
                 if text.is_empty() {
                     cx.propagate();
                     return;
                 }
-                cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
+                write_clipboard_text(cx, text);
             })
             .on_action(window.listener_for(&state, TextViewState::on_action_select_all))
             .child(state.clone())
@@ -460,7 +460,7 @@ mod tests {
             "unloaded inline image fallback should stay generic and compact"
         );
     }
-  
+
     #[test]
     fn plugin_accepts_text_view_plugins_beyond_markdown() {
         let view = TextView::markdown("plugin-test", "").plugin(DummyTextViewPlugin);

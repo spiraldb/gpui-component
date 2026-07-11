@@ -30,7 +30,7 @@ actions!(inspector, [ToggleInspector]);
 /// Initialize the inspector and register the action to toggle it.
 pub(crate) fn init(cx: &mut App) {
     cx.bind_keys(vec![
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_family = "wasm"))]
         KeyBinding::new("cmd-alt-i", ToggleInspector, None),
         #[cfg(not(target_os = "macos"))]
         KeyBinding::new("ctrl-shift-i", ToggleInspector, None),

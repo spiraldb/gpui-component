@@ -6,15 +6,15 @@ use crate::{
         Cancel, CopySelection, SelectDown, SelectFirst, SelectLast, SelectNextColumn,
         SelectPageDown, SelectPageUp, SelectPrevColumn, SelectUp,
     },
+    clipboard_utils::write_clipboard_text,
     h_flex,
     menu::{ContextMenuExt, PopupMenu},
     scroll::{ScrollableMask, Scrollbar},
     v_flex,
 };
 use gpui::{
-    AppContext, Axis, Bounds, ClickEvent, ClipboardItem, Context, Div, DragMoveEvent, Edges,
-    EventEmitter, FocusHandle, Focusable, InteractiveElement, IntoElement, ListSizingBehavior,
-    MouseButton,
+    AppContext, Axis, Bounds, ClickEvent, Context, Div, DragMoveEvent, Edges, EventEmitter,
+    FocusHandle, Focusable, InteractiveElement, IntoElement, ListSizingBehavior, MouseButton,
     MouseDownEvent, ParentElement, Pixels, Point, Render, ScrollStrategy, SharedString, Stateful,
     StatefulInteractiveElement as _, Styled, Task, UniformListScrollHandle, Window, div,
     prelude::FluentBuilder, px, uniform_list,
@@ -104,9 +104,7 @@ impl SelectionRegion {
 
     fn contains(&self, row: usize, col: usize) -> bool {
         match *self {
-            Self::Cells { r0, c0, r1, c1 } => {
-                (r0..=r1).contains(&row) && (c0..=c1).contains(&col)
-            }
+            Self::Cells { r0, c0, r1, c1 } => (r0..=r1).contains(&row) && (c0..=c1).contains(&col),
             Self::Rows { r0, r1 } => (r0..=r1).contains(&row),
             Self::Cols { c0, c1 } => (c0..=c1).contains(&col),
         }
@@ -904,8 +902,9 @@ where
         rows_count: usize,
         cols_count: usize,
     ) -> Edges<bool> {
-        let selected =
-            |row: usize, col: usize| row < rows_count && col < cols_count && self.is_cell_selected(row, col);
+        let selected = |row: usize, col: usize| {
+            row < rows_count && col < cols_count && self.is_cell_selected(row, col)
+        };
 
         Edges {
             top: row_ix == 0 || !selected(row_ix - 1, col_ix),
@@ -1164,7 +1163,7 @@ where
             }
         }
 
-        cx.write_to_clipboard(ClipboardItem::new_string(text));
+        write_clipboard_text(cx, text);
     }
 
     pub(super) fn action_cancel(&mut self, _: &Cancel, _: &mut Window, cx: &mut Context<Self>) {

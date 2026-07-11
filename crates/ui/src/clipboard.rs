@@ -1,13 +1,11 @@
 use std::{rc::Rc, time::Duration};
 
-use gpui::{
-    prelude::FluentBuilder, App, ClipboardItem, ElementId, IntoElement, RenderOnce, SharedString,
-    Window,
-};
+use gpui::{App, ElementId, IntoElement, RenderOnce, SharedString, Window, prelude::FluentBuilder};
 
 use crate::{
-    button::{Button, ButtonVariants as _},
     IconName, Sizable as _,
+    button::{Button, ButtonVariants as _},
+    clipboard_utils::write_clipboard_text,
 };
 
 /// An element that provides clipboard copy functionality.
@@ -93,7 +91,7 @@ impl RenderOnce for Clipboard {
                             .as_ref()
                             .map(|f| f(window, cx))
                             .unwrap_or_else(|| value.clone());
-                        cx.write_to_clipboard(ClipboardItem::new_string(value.to_string()));
+                        write_clipboard_text(cx, value.to_string());
                         state.update(cx, |state, cx| {
                             state.copied = true;
                             cx.notify();

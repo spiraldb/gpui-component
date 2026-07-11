@@ -1,5 +1,6 @@
 use crate::{
     ActiveTheme, ElementExt, Placement, StyledExt,
+    clipboard_utils::write_clipboard_text,
     dialog::{ANIMATION_DURATION, Dialog},
     focus_trap::FocusTrapManager,
     input::{Copy, InputState},
@@ -11,10 +12,10 @@ use crate::{
     window_border,
 };
 use gpui::{
-    Anchor, AnyView, App, AppContext, Bounds, ClipboardItem, Context, DefiniteLength, ElementId,
-    Entity, EntityId, FocusHandle, Hitbox, InteractiveElement, IntoElement, KeyBinding,
-    ParentElement as _, Pixels, Render, StyleRefinement, Styled, WeakEntity, WeakFocusHandle,
-    Window, actions, div, prelude::FluentBuilder as _,
+    Anchor, AnyView, App, AppContext, Bounds, Context, DefiniteLength, ElementId, Entity, EntityId,
+    FocusHandle, Hitbox, InteractiveElement, IntoElement, KeyBinding, ParentElement as _, Pixels,
+    Render, StyleRefinement, Styled, WeakEntity, WeakFocusHandle, Window, actions, div,
+    prelude::FluentBuilder as _,
 };
 use std::{any::TypeId, collections::HashMap, rc::Rc};
 
@@ -25,7 +26,7 @@ pub(crate) fn init(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("tab", Tab, Some(CONTEXT)),
         KeyBinding::new("shift-tab", TabPrev, Some(CONTEXT)),
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_family = "wasm"))]
         KeyBinding::new("cmd-c", Copy, Some(CONTEXT)),
         #[cfg(not(target_os = "macos"))]
         KeyBinding::new("ctrl-c", Copy, Some(CONTEXT)),
@@ -540,7 +541,7 @@ impl Root {
             cx.propagate();
             return;
         }
-        cx.write_to_clipboard(ClipboardItem::new_string(text));
+        write_clipboard_text(cx, text);
     }
 }
 

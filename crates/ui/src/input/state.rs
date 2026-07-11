@@ -4,12 +4,11 @@
 //! https://github.com/zed-industries/zed/blob/main/crates/gpui/examples/input.rs
 use anyhow::Result;
 use gpui::{
-    Action, App, AppContext, Bounds, ClipboardItem, Context, Edges, Entity, EntityInputHandler,
-    EventEmitter, FocusHandle, Focusable, InteractiveElement as _, IntoElement, KeyBinding,
-    KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement as _,
-    Pixels, Point, Render, ScrollHandle, ScrollWheelEvent, ShapedLine, SharedString, Styled as _,
-    Subscription, Task, UTF16Selection, Window, actions, div, point, prelude::FluentBuilder as _,
-    px,
+    Action, App, AppContext, Bounds, Context, Edges, Entity, EntityInputHandler, EventEmitter,
+    FocusHandle, Focusable, InteractiveElement as _, IntoElement, KeyBinding, KeyDownEvent,
+    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement as _, Pixels, Point,
+    Render, ScrollHandle, ScrollWheelEvent, ShapedLine, SharedString, Styled as _, Subscription,
+    Task, UTF16Selection, Window, actions, div, point, prelude::FluentBuilder as _, px,
 };
 use gpui::{Half, TextAlign};
 use ropey::{Rope, RopeSlice};
@@ -33,6 +32,7 @@ use super::{
 };
 use crate::Size;
 use crate::actions::{SelectDown, SelectLeft, SelectRight, SelectUp};
+use crate::clipboard_utils::write_clipboard_text;
 use crate::highlighter::DiagnosticSet;
 #[cfg(feature = "tree-sitter")]
 use crate::highlighter::LanguageRegistry;
@@ -137,9 +137,9 @@ pub(crate) fn init(cx: &mut App) {
         KeyBinding::new("ctrl-backspace", Backspace, Some(CONTEXT)),
         KeyBinding::new("delete", Delete, Some(CONTEXT)),
         KeyBinding::new("shift-delete", Delete, Some(CONTEXT)),
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_family = "wasm"))]
         KeyBinding::new("cmd-backspace", DeleteToBeginningOfLine, Some(CONTEXT)),
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_family = "wasm"))]
         KeyBinding::new("cmd-delete", DeleteToEndOfLine, Some(CONTEXT)),
         #[cfg(target_os = "macos")]
         KeyBinding::new("alt-backspace", DeleteToPreviousWordStart, Some(CONTEXT)),
@@ -182,11 +182,11 @@ pub(crate) fn init(cx: &mut App) {
         KeyBinding::new("pagedown", MovePageDown, Some(CONTEXT)),
         KeyBinding::new("tab", IndentInline, Some(CONTEXT)),
         KeyBinding::new("shift-tab", OutdentInline, Some(CONTEXT)),
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_family = "wasm"))]
         KeyBinding::new("cmd-]", Indent, Some(CONTEXT)),
         #[cfg(not(target_os = "macos"))]
         KeyBinding::new("ctrl-]", Indent, Some(CONTEXT)),
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_family = "wasm"))]
         KeyBinding::new("cmd-[", Outdent, Some(CONTEXT)),
         #[cfg(not(target_os = "macos"))]
         KeyBinding::new("ctrl-[", Outdent, Some(CONTEXT)),
@@ -202,9 +202,9 @@ pub(crate) fn init(cx: &mut App) {
         KeyBinding::new("ctrl-shift-a", SelectToStartOfLine, Some(CONTEXT)),
         #[cfg(target_os = "macos")]
         KeyBinding::new("ctrl-shift-e", SelectToEndOfLine, Some(CONTEXT)),
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_family = "wasm"))]
         KeyBinding::new("shift-cmd-left", SelectToStartOfLine, Some(CONTEXT)),
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_family = "wasm"))]
         KeyBinding::new("shift-cmd-right", SelectToEndOfLine, Some(CONTEXT)),
         #[cfg(target_os = "macos")]
         KeyBinding::new("alt-shift-left", SelectToPreviousWordStart, Some(CONTEXT)),
@@ -216,37 +216,37 @@ pub(crate) fn init(cx: &mut App) {
         KeyBinding::new("ctrl-shift-right", SelectToNextWordEnd, Some(CONTEXT)),
         #[cfg(target_os = "macos")]
         KeyBinding::new("ctrl-cmd-space", ShowCharacterPalette, Some(CONTEXT)),
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_family = "wasm"))]
         KeyBinding::new("cmd-a", SelectAll, Some(CONTEXT)),
         #[cfg(not(target_os = "macos"))]
         KeyBinding::new("ctrl-a", SelectAll, Some(CONTEXT)),
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_family = "wasm"))]
         KeyBinding::new("cmd-c", Copy, Some(CONTEXT)),
         #[cfg(not(target_os = "macos"))]
         KeyBinding::new("ctrl-c", Copy, Some(CONTEXT)),
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_family = "wasm"))]
         KeyBinding::new("cmd-x", Cut, Some(CONTEXT)),
         #[cfg(not(target_os = "macos"))]
         KeyBinding::new("ctrl-x", Cut, Some(CONTEXT)),
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_family = "wasm"))]
         KeyBinding::new("cmd-v", Paste, Some(CONTEXT)),
         #[cfg(not(target_os = "macos"))]
         KeyBinding::new("ctrl-v", Paste, Some(CONTEXT)),
         #[cfg(target_os = "macos")]
         KeyBinding::new("ctrl-a", MoveHome, Some(CONTEXT)),
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_family = "wasm"))]
         KeyBinding::new("cmd-left", MoveHome, Some(CONTEXT)),
         #[cfg(target_os = "macos")]
         KeyBinding::new("ctrl-e", MoveEnd, Some(CONTEXT)),
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_family = "wasm"))]
         KeyBinding::new("cmd-right", MoveEnd, Some(CONTEXT)),
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_family = "wasm"))]
         KeyBinding::new("cmd-z", Undo, Some(CONTEXT)),
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_family = "wasm"))]
         KeyBinding::new("cmd-shift-z", Redo, Some(CONTEXT)),
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_family = "wasm"))]
         KeyBinding::new("cmd-up", MoveToStart, Some(CONTEXT)),
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_family = "wasm"))]
         KeyBinding::new("cmd-down", MoveToEnd, Some(CONTEXT)),
         #[cfg(target_os = "macos")]
         KeyBinding::new("alt-left", MoveToPreviousWord, Some(CONTEXT)),
@@ -256,19 +256,19 @@ pub(crate) fn init(cx: &mut App) {
         KeyBinding::new("ctrl-left", MoveToPreviousWord, Some(CONTEXT)),
         #[cfg(not(target_os = "macos"))]
         KeyBinding::new("ctrl-right", MoveToNextWord, Some(CONTEXT)),
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_family = "wasm"))]
         KeyBinding::new("cmd-shift-up", SelectToStart, Some(CONTEXT)),
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_family = "wasm"))]
         KeyBinding::new("cmd-shift-down", SelectToEnd, Some(CONTEXT)),
         #[cfg(not(target_os = "macos"))]
         KeyBinding::new("ctrl-z", Undo, Some(CONTEXT)),
         #[cfg(not(target_os = "macos"))]
         KeyBinding::new("ctrl-y", Redo, Some(CONTEXT)),
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_family = "wasm"))]
         KeyBinding::new("cmd-.", ToggleCodeActions, Some(CONTEXT)),
         #[cfg(not(target_os = "macos"))]
         KeyBinding::new("ctrl-.", ToggleCodeActions, Some(CONTEXT)),
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_family = "wasm"))]
         KeyBinding::new("cmd-f", Search, Some(CONTEXT)),
         #[cfg(not(target_os = "macos"))]
         KeyBinding::new("ctrl-f", Search, Some(CONTEXT)),
@@ -2030,7 +2030,7 @@ impl InputState {
         }
 
         let selected_text = self.text.slice(self.selected_range).to_string();
-        cx.write_to_clipboard(ClipboardItem::new_string(selected_text));
+        write_clipboard_text(cx, selected_text);
     }
 
     pub(super) fn cut(&mut self, _: &Cut, window: &mut Window, cx: &mut Context<Self>) {
@@ -2039,7 +2039,7 @@ impl InputState {
         }
 
         let selected_text = self.text.slice(self.selected_range).to_string();
-        cx.write_to_clipboard(ClipboardItem::new_string(selected_text));
+        write_clipboard_text(cx, selected_text);
 
         self.replace_text_in_range_silent(None, "", window, cx);
     }

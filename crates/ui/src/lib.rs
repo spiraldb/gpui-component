@@ -2,6 +2,7 @@ use gpui::{App, SharedString};
 use std::ops::Deref;
 
 mod async_util;
+mod clipboard_utils;
 mod element_ext;
 mod event;
 mod focus_trap;
