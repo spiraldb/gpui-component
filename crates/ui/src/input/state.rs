@@ -228,9 +228,12 @@ pub(crate) fn init(cx: &mut App) {
         KeyBinding::new("cmd-x", Cut, Some(CONTEXT)),
         #[cfg(not(target_os = "macos"))]
         KeyBinding::new("ctrl-x", Cut, Some(CONTEXT)),
-        #[cfg(any(target_os = "macos", target_family = "wasm"))]
+        // No Paste binding on wasm: paste arrives via the platform's DOM `paste`
+        // listener, which only fires if the cmd/ctrl-v keydown reaches the browser
+        // unconsumed.
+        #[cfg(target_os = "macos")]
         KeyBinding::new("cmd-v", Paste, Some(CONTEXT)),
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(all(not(target_os = "macos"), not(target_family = "wasm")))]
         KeyBinding::new("ctrl-v", Paste, Some(CONTEXT)),
         #[cfg(target_os = "macos")]
         KeyBinding::new("ctrl-a", MoveHome, Some(CONTEXT)),
