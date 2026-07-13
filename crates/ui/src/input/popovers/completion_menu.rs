@@ -471,8 +471,11 @@ impl Render for CompletionMenu {
             .selected_item()
             .and_then(|item| item.documentation.clone());
 
-        let max_width = MAX_MENU_WIDTH.min(window.bounds().size.width - pos.x);
         let abs_pos = self.editor.read(cx).input_bounds.origin + pos;
+        // A definite width: content-based sizing would track the (virtualized)
+        // first item, making the menu width depend on flex direction and jitter
+        // with ranking as the query is typed.
+        let menu_width = MAX_MENU_WIDTH.min(window.bounds().size.width - abs_pos.x - POPOVER_GAP);
         let vertical_layout =
             abs_pos.x + MAX_MENU_WIDTH + POPOVER_GAP + MAX_MENU_WIDTH + POPOVER_GAP
                 > window.bounds().size.width;
@@ -489,7 +492,7 @@ impl Render for CompletionMenu {
                 .when(vertical_layout, |this| this.flex_col())
                 .child(
                     editor_popover("completion-menu", cx)
-                        .max_w(max_width)
+                        .w(menu_width)
                         .min_w(px(120.))
                         .child(List::new(&self.list).max_h(MAX_MENU_HEIGHT)),
                 )
