@@ -1799,6 +1799,9 @@ impl InputState {
         if event.button == MouseButton::Right {
             if self.enable_context_menu || self.context_menu_builder.is_some() {
                 self.handle_right_click_menu(event, offset, window, cx);
+                // Mark the right-click consumed so the web platform cancels the
+                // native browser context menu when ours opens.
+                cx.stop_propagation();
             }
             return;
         }

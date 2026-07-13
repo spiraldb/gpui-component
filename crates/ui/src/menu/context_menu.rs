@@ -287,6 +287,10 @@ impl<E: ParentElement + Styled + IntoElement + 'static> Element for ContextMenu<
                             shared_state.open = true;
                         }
 
+                        // Mark the right-click consumed so the web platform
+                        // cancels the native browser context menu when ours opens.
+                        cx.stop_propagation();
+
                         // Use defer to build the menu in the next frame, avoiding race conditions
                         window.defer(cx, {
                             let shared_state = shared_state.clone();
