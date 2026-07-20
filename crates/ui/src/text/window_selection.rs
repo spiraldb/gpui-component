@@ -4,7 +4,10 @@ use gpui::{
     MouseUpEvent, Pixels, Point, ScrollWheelEvent, Style, WeakEntity, Window,
 };
 
-use crate::{Root, global_state::GlobalState, scroll::AutoScroll, text::TextViewState};
+use crate::{
+    Root, actions::CopyText, global_state::GlobalState, native_menu::NativeMenu,
+    scroll::AutoScroll, text::TextViewState,
+};
 
 /// The modal layer a selectable [`TextView`](crate::text::TextView) belongs to.
 ///
@@ -805,6 +808,48 @@ impl Element for TextSelectionController {
                     root.start_text_selection(event.position, window, cx);
                 });
             }
+        });
+
+        window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
+            // Right-click offers a Copy menu for the current selection instead of
+            // the browser's canvas-level "Copy image" menu. The left handler's
+            // ownership-flag reset sits behind its `!= Left` early return, so it
+            // never runs for a right press; reset it here on capture to avoid a
+            // stale value from a prior interaction. The selection itself is left
+            // intact (a right-click must not clear what it is about to copy).
+            if event.button != MouseButton::Right {
+                return;
+            }
+            if phase.capture() {
+                GlobalState::global_mut(cx).suppress_text_selection = false;
+                return;
+            }
+            // Bubble phase: a component (Input, Button, …) that owns this press
+            // set the flag in its own handler and shows its own menu.
+            if GlobalState::global(cx).suppress_text_selection {
+                return;
+            }
+            if GlobalState::global(cx).is_in_deferred_context() {
+                return;
+            }
+            // Capture the selected text now (short-lived borrow: `NativeMenu::show`
+            // re-reads `Root` for its web fallback overlay, so no `Root` borrow may
+            // be held across it). The text is carried in the `CopyText` action, so
+            // clicking the menu item copies it even though that left-click clears
+            // the window selection first.
+            let text = Root::read(window, cx).window_selected_text(cx).trim().to_string();
+            if text.is_empty() {
+                // Nothing to copy: let the press propagate so the browser's own
+                // context menu can appear (matching `gpui_web`'s arbitration).
+                return;
+            }
+            // `CopyText` has no key binding, so the item shows no accelerator
+            // (a per-platform one can't be resolved correctly on the web target).
+            NativeMenu::new()
+                .menu(rust_i18n::t!("Input.Copy"), Box::new(CopyText { text: text.into() }))
+                .show(event.position, window, cx);
+            // Claim the right-click so `gpui_web` cancels the native menu.
+            cx.stop_propagation();
         });
 
         window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {

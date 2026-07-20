@@ -3034,6 +3034,7 @@ dependencies = [
  "tree-sitter-zig",
  "unicode-segmentation",
  "uuid",
+ "wasm-bindgen-futures",
  "web-sys",
  "windows 0.58.0",
  "zed-sum-tree",

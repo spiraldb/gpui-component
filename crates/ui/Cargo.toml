@@ -147,6 +147,7 @@ instant = { version = "0.1", features = ["wasm-bindgen"] }
 
 [target.'cfg(target_family = "wasm")'.dependencies]
 web-sys = { version = "0.3", features = ["Clipboard", "Navigator", "Window"] }
+wasm-bindgen-futures = "0.4"
 
 # Native-only dependencies (not available on WASM)
 [target.'cfg(not(target_family = "wasm"))'.dependencies]

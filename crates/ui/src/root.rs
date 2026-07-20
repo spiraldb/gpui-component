@@ -1,5 +1,6 @@
 use crate::{
     ActiveTheme, ElementExt, Placement, StyledExt,
+    actions::CopyText,
     clipboard_utils::write_clipboard_text,
     dialog::{ANIMATION_DURATION, Dialog},
     focus_trap::FocusTrapManager,
@@ -543,6 +544,17 @@ impl Root {
         }
         write_clipboard_text(cx, text);
     }
+
+    /// Copy the text carried by a [`CopyText`] action (dispatched by a context
+    /// menu that captured a selection when it opened, so it does not depend on
+    /// the live selection still being present).
+    fn on_action_copy_text(&mut self, action: &CopyText, _: &mut Window, cx: &mut Context<Self>) {
+        let text = action.text.trim().to_string();
+        if text.is_empty() {
+            return;
+        }
+        write_clipboard_text(cx, text);
+    }
 }
 
 impl Styled for Root {
@@ -561,6 +573,7 @@ impl Render for Root {
             .on_action(cx.listener(Self::on_action_tab))
             .on_action(cx.listener(Self::on_action_tab_prev))
             .on_action(cx.listener(Self::on_action_copy))
+            .on_action(cx.listener(Self::on_action_copy_text))
             .relative()
             .size_full()
             .font_family(cx.theme().font_family.clone())

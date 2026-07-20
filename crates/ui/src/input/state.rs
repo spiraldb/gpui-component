@@ -1712,7 +1712,11 @@ impl InputState {
             let has_goto_definition = is_enable && self.lsp.definition_provider.is_some();
             let has_code_action = is_enable && !self.lsp.code_action_providers.is_empty();
             let is_selected = !self.selected_range.is_empty();
-            let has_paste = is_enable && cx.read_from_clipboard().is_some();
+            // On the web the clipboard can only be read asynchronously, so its
+            // contents are unknown here; offer Paste and let the async read (or
+            // the permission prompt) resolve on click.
+            let has_paste = is_enable
+                && (cfg!(target_family = "wasm") || cx.read_from_clipboard().is_some());
 
             let mut menu = NativeMenu::new();
             if is_code_editor {
@@ -2050,6 +2054,7 @@ impl InputState {
         self.replace_text_in_range_silent(None, "", window, cx);
     }
 
+    #[cfg(not(target_family = "wasm"))]
     pub(super) fn paste(&mut self, _: &Paste, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(clipboard) = cx.read_from_clipboard() {
             let mut new_text = clipboard.text().unwrap_or_default();
@@ -2060,6 +2065,38 @@ impl InputState {
             self.replace_text_in_range_silent(None, &new_text, window, cx);
             self.scroll_to(self.cursor(), None, cx);
         }
+    }
+
+    /// Paste on the web platform.
+    ///
+    /// The browser clipboard can only be read asynchronously and with the
+    /// user's permission, so — unlike the native path, which reads gpui's
+    /// synchronous clipboard — this reads on the menu-click gesture and inserts
+    /// once the promise resolves. (`cmd-v` bypasses this via the DOM `paste`
+    /// event and has no wasm keybinding, so there is no double paste.)
+    #[cfg(target_family = "wasm")]
+    pub(super) fn paste(&mut self, _: &Paste, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(clipboard) = web_sys::window().map(|w| w.navigator().clipboard()) else {
+            return;
+        };
+        let read = clipboard.read_text();
+        let is_multi_line = self.mode.is_multi_line();
+        cx.spawn_in(window, async move |entity, cx| {
+            let Ok(value) = wasm_bindgen_futures::JsFuture::from(read).await else {
+                return;
+            };
+            let Some(mut new_text) = value.as_string() else {
+                return;
+            };
+            if !is_multi_line {
+                new_text = new_text.replace('\n', "");
+            }
+            _ = entity.update_in(cx, |state, window, cx| {
+                state.replace_text_in_range_silent(None, &new_text, window, cx);
+                state.scroll_to(state.cursor(), None, cx);
+            });
+        })
+        .detach();
     }
 
     fn push_history(&mut self, text: &Rope, range: &Range<usize>, new_text: &str) {
